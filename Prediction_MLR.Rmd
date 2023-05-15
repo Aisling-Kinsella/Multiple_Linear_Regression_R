@@ -1,0 +1,581 @@
+---
+title: "**Prediction using Multiple Linear Regression**"
+subtitle: "Video Transcoding Time" 
+author: Aisling Kinsella
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    df_print: kable
+    fig_width: 7
+    fig_height: 4
+    fig_caption: true
+    extra_dependencies: rotating
+geometry: margin=1in
+fontsize: 12pt
+header-includes:
+# - \usepackage[utf8]{inputenc}
+- \usepackage{booktabs}
+- \usepackage{float}
+- \usepackage{dcolumn}
+- \usepackage{fontspec}
+- \setmainfont{Avenir Light} # GFS Didot
+- \setsansfont{Raleway}
+
+---
+\newpage
+
+``` {r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.showtext = TRUE)
+
+# Load Libraries
+library(knitr)
+library(rio) # multiple format file import
+library(dplyr)
+library(tidyverse)
+library(kableExtra) 
+library(xtable)
+library(stargazer)
+library(pander)
+library(viridis)
+library(RColorBrewer)
+library(ggsci)
+library(ggplot2)
+library(gridExtra)
+library(grid)
+library(gtable)
+library(showtext)
+library(GGally)
+library(reshape2)
+library(ggcorrplot)
+library(psych)
+library(caret)
+library(texreg)
+library(jtools)
+
+ # Load fonts 
+font_add(family = "Proxima Nova Light", regular = "/Users/aislingkinsella/Library/Fonts/Proxima Nova Light.otf") 
+font_add(family = "Proxima Nova Thin", regular = "/Users/aislingkinsella/Library/Fonts/Proxima Nova Thin.otf") 
+font_add(family = "Proxima Nova Regular", regular = "/Users/aislingkinsella/Library/Fonts/Proxima Nova Regular.otf") 
+
+install_formats()
+
+options(xtable.comment = FALSE)
+
+# to switch between latex font sizes from chunk to markdown text
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+```
+
+
+# Introduction 
+
+This work aims to predict video transcode time using multiple variables as inputs to a prediction model. Multiple linear regression, an extension of simple linear regression, is a useful model in this case as there are multiple independent variables to consider when predicting the dependent variable; video transcode time. The goal is the establishment of a function of select independent variables which best explains the dependent variable. Multiple linear regression has the advantage of revealing potential relationships among the different independent variables. This can help mitigate against any over-fitting that can occur when making use of multiple variables, while removing any redundancy-derived imprecision. 
+
+
+```{r importData, echo=FALSE}
+
+# Load Datasets
+transcodeData <- rio::import("Data/transcoding_mesurment.tsv", format = "tsv")
+youtubeData <- rio::import("Data/youtube_videos.tsv", format = "tsv")
+
+# str(transcodeData)
+dfDim <- dim(transcodeData)
+
+```
+
+
+## Dataset
+
+The dataset was provided by Tewodros Deneke, hosted on the UCI machine learning repository. 
+It consists of $`r dfDim[1]`$ records and $`r dfDim[2]`$ variables. 
+
+\footnotesize
+```{r viewHead,  echo = FALSE}
+
+# View DF Heads
+options(knitr.kable.NA = "**") 
+
+pander(head(transcodeData), caption= "Video Transcode Specifications\n")
+
+```
+\newpage
+\normalsize
+```{r uniqueCounts, echo = FALSE}
+
+# Get unique counts for id to confirm only one video. For codecs to count the number of
+# transcodeData %>% group_by("id") %>% summarize(count=n())
+# transcodeData %>% group_by("o_codec") %>% summarize(count=n())
+noVideos <- length(unique(transcodeData[,"id"])) 
+
+noDurations <- length(unique(transcodeData[,"duration"]))
+
+# **** Discrepancy between no of unique vid id's and unique vid durations
+
+```
+
+
+
+The table presents the data for $`r noVideos`$ uniquely identified videos. Each video is presented in a number of different framesizes, framerates, bitrates and codecs. The time taken to transcode the original video to a variance of the format is stored in the *utime* column. 
+This is the variable that will be predicted; the dependent variable. 
+
+```{r uniqueCodecs, echo=FALSE, results='asis'}
+
+# Find number of unique codecs
+inputCodecs <- unique(transcodeData[,"codec"])
+outputCodecs <- unique(transcodeData[,"o_codec"])
+
+# Find number of unique width/height
+widthData <- unique(transcodeData[, "width"])
+heightData <- unique(transcodeData[,"height"])
+
+# join width/height data into matrix
+join <- c(widthData, heightData)
+
+widthHeight <- matrix(join, nrow = 6, ncol = 2)
+
+# label columns
+colnames(widthHeight) <- c("Width", "Height")
+
+# Show in Table
+ kbl(widthHeight, format ="latex", caption = "Video Dimensions/Frame Sizes", booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "HOLD_position"))
+ 
+ # output below bypassed, goes straight to LaTeX
+
+```
+
+The dataset is suitably prepared for multiple regression in so far as there is a one unit change in a single variable per row, while all other variables are held constant.
+
+__Example:__
+
+The first video of duration 130.4, mpeg4, has been transcoded to 6 different frame sizes, *Table 4*, each with an amended bitrate of 56000. The initial file is then output to the 6 different frame sizes with an amended frame rate of 15fps. The data continues in this manner until all possible output variations have been achieved for the specified output codec, mpeg4. The cycle begins again with the next output codec, of which 4 are trialed; `r outputCodecs`.
+
+
+
+***
+
+\newpage
+
+# Exploratory Data Analysis
+
+```{r nas, echo = FALSE}
+# sum(is.na(transcodeData)) 
+
+# No missing values in dataset
+```
+
+## Summary Statistics
+
+
+``` {r sumStatsUTime, size = 'small', results = "asis"}
+
+pander(summary(transcodeData$utime), caption = "Summary Statistics: Transcode Time")
+
+```
+
+
+There is high dispersion among the *utime*/transcode time data. It appears the data may not be normally distributed as the mean value is higher than the median. The median value is an appropriate choice for identifying a central value as it is not dependent on the shape of the data. 
+
+
+## Distribution
+
+The dependent variable, *utime* or video transcode time, is plotted in order to clarify the distribution. It is evident the data is right skewed with clustering below the mean. Skewed data is not ideal as linear regression assumes a normal distribution. However, in practice this is common and may be tempered at a later stage. 
+
+\hfill\break
+
+```{r plotDist, echo = FALSE, warning = FALSE}
+
+pTheme <- theme(plot.title = element_text(hjust = 0.5, family = "Proxima Nova Regular",  size = (12), colour = "#3b518b"),
+                axis.title = element_text(family = "Proxima Nova Regular", size = (8), colour = "#3b518b"),
+                axis.text = element_text(family = "Proxima Nova Thin", colour = "#3b518b", size = (8)))
+
+# Plot the data
+p <- ggplot(transcodeData, aes(x = utime, fill=..x..)) + geom_histogram(alpha = 0.8, binwidth=5, color="#FFFFFF") +  scale_fill_viridis_c(option = 'E', direction = -1) +
+    scale_color_viridis()  + labs(title = "Transcode Time Distribution",y = "Count", x = "Transcode Time") + pTheme + xlim(0, 100) + theme(legend.position = "bottom")
+                                          
+# Add mean line
+p2 <- p + geom_vline(aes(xintercept=mean(utime)),
+               color = "#3b518b", linetype = "dashed", size = 1)
+p2                                                      
+```
+
+
+
+\newpage
+
+## Factor Coding
+
+Regression models require every feature to be numeric. The categorical variable *codec* contains four factors: the types of input codec. This factor variable has been codified for inclusion in the model and pairwise comparisions. Additional columns have been appended to the data frame including binary codings for each individual codec.   
+
+\hfill\break
+
+
+``` {r codecDist, results = "hide"}
+# Distribution of input and output codec data/ factor-type data
+
+a <- table(transcodeData$codec)
+b <- table(transcodeData$o_codec)
+
+codecDist <- print(xtable(t(a),
+         align=rep("r",5)),
+  table.placement="H")
+
+```
+
+
+
+```{r cat2Bin, results = 'hide'}
+# Data Preparation - Dummy Coding Missing Values
+
+# # Comparing constructed dummy variables to the original codec variable:
+# table(transcodeData$codec, useNA = "ifany")
+# table(transcodeData$mp4, useNA = "ifany")
+# table(transcodeData$h264, useNA = "ifany")
+# table(transcodeData$flv, useNA = "ifany")
+
+# The number of transcodeData$mp4 and transcodeData$h264 etc. matches the number of mpeg4,h264 and flv values in the initial coding so dummy coding can be trusted
+
+
+# Codify codec colum and append new cols to dataframe
+transcodeData <- transcodeData %>% mutate(mpeg4 = if_else(codec=="mpeg4", 1, 0)) %>% mutate(h264 = if_else(codec=="h264", 1, 0)) %>% mutate(flv = if_else(codec=="flv", 1, 0)) %>% mutate(vp8 = if_else(codec=="vp8", 1, 0))
+
+round(transcodeData$mpeg4)
+round(transcodeData$h264)
+round(transcodeData$flv) 
+round(transcodeData$vp8)
+
+newCols <- head(transcodeData[1,23:26], drop = FALSE)
+newCols
+
+
+# Print new cols added
+colsAdded <- print(xtable(newCols,
+         align=rep("r",5), digits=c(0,0,0,0,0)), # vector of values to pass to decimal places required per column
+          table.placement="H")
+
+
+# Codify o_codec colum and append new cols to dataframe
+transcodeData <- transcodeData %>% mutate(o_mpeg4 = if_else(o_codec=="mpeg4", 1, 0)) %>% mutate(o_h264 = if_else(o_codec=="h264", 1, 0)) %>% mutate(o_flv = if_else(o_codec=="flv", 1, 0)) %>% mutate(o_vp8 = if_else(o_codec=="vp8", 1, 0))
+
+round(transcodeData$o_mpeg4)
+round(transcodeData$o_h264)
+round(transcodeData$o_flv) 
+round(transcodeData$o_vp8)
+
+newCols <- head(transcodeData[1,23:30], drop = FALSE)
+newCols
+
+
+# Print new cols added
+colsAdded <- print(xtable(newCols,
+         align=rep("r",9), digits=c(0,0,0,0,0,0,0,0,0)), # vector of values to pass to decimal places required per column
+          table.placement="H")
+
+# table printed in next code chunk
+```
+
+````{r latAlignTables, results = 'asis'}
+
+# align tables
+cat(c("\\begin{table}[!htb]
+    \\begin{minipage}{.5\\linewidth}
+      \\centering
+       \\caption{Distribution: Input Codecs}",
+        codecDist,
+    "\\end{minipage}
+    \\begin{minipage}{.5\\linewidth}
+      \\centering
+       \\caption{Appended Columns}",
+        colsAdded,
+    "\\end{minipage}
+\\end{table}"
+))
+
+```
+
+
+\hfill\break
+  
+```{r codecPlot, fig.height = 6 , fig.width = 7 , echo = FALSE}
+
+codecPlot <- ggplot(transcodeData, aes(codec, ..count..)) + geom_bar(alpha = 0.8, aes(fill = o_codec), color = "#FFFFFF", position = "dodge") + labs(title="Output Codec Distribution", y = "Count", x = "Codec")+  scale_fill_viridis_d(begin = 0.3, end = 1, option = 'E', direction = -1)+ theme(legend.position = "bottom") + pTheme
+
+codecPlot
+```
+
+\newpage
+
+## Correlation Analysis
+
+Correlation indicates the extent to which two or more variables move together. Before fitting any regression model to data, the relationships between the dependent variable and each independent variable must be checked for correlations. The Pearson Correlation Coefficient is calculated with each pair of features receiving a value of between -1 to +1; revealing the strength of the linear relationship between each feature pairing.
+
+A positive linear relationship indicates that the feature variable can explain some of the variance in the predictor variable and thus could be useful in the prediction model.  When the resulting coefficent is zero, it simply indicates the absence of a *linear* relationship between two variables; they may still be correlated and not independent of each other. 
+
+
+```{r corMatrix, size = 'footnotesize', results = 'asis'}
+
+corMatrix <- correlation.matrix <- cor(transcodeData[,c("duration", "width", "height", "bitrate", "framerate", "size", "o_bitrate", "o_framerate","o_width", "o_height", "mpeg4", "h264", "flv", "vp8")])
+
+pander(corMatrix, caption= "Correlation Matrix\n")
+
+# stargazer(correlation.matrix, title="Correlation Matrix", type = 'latex', header = FALSE, font.size = "tiny", float.env = "sidewaystable")  - Landscape matrix
+
+```
+The figure above shows the correlation matrix for the numeric variables in the transcode dataset. Features *i, p, b, frames, i_size, p_size and b_size* will not be used in the model as these values are codec specific compression-type values.
+
+Numbers along the diagonal of the matrix are always one, as there is naturally a perfect correlation between the variable and itself. The correlation matrix is plotted below for clarity, with duplicates removed.
+
+
+\newpage
+```{r corMatPlot, fig.height = 6 , fig.width = 9 , echo = FALSE, message = FALSE}
+
+# plot the cor matrix
+gp <- ggcorrplot(corMatrix, hc.order = TRUE, type = "lower", lab = TRUE, lab_col= "white",  insig = "blank") + scale_fill_viridis_c(alpha = 0.8, begin = 0, end = 1, option = 'E', direction = -1) +
+    scale_color_viridis()  #  method = "circle",
+
+gp2 <-  gp + pTheme + labs(title = "Correlation Matrix")
+
+gp2
+
+```
+
+\hfill\break
+
+Reading the correlation matrix it becomes apparent that there are potential multicollinearity problems. When more than two independent variables are highly linearly correlated this phenomenon occurs, making it difficult to interpret the model results. Multiple linear regression assumes no multicollinearity so this must be further investigated in order to establish a reliable prediction model. 
+
+__The following results can be surmised;__
+
+
+* *height* and *width* appear highly positively correlated with each other
+* *bitrate* and *height* appear highly positively correlated with each other
+* *bitrate* and *width* appear highly positively correlated with each other
+* *size* shows positive correlation to *bitrate*, *width* and *height*
+
+\newpage
+Generally a coefficient of >0.7 among variables indicates the presence of multicollinearity. The correlation coefficients between *size* and *bitrate*, *width* and *height* falls below this cut off, at 0.62, 0.58, and 0.55 respectively. Relationships between *width*, *height* and *size* exceed this threshold.
+
+When building a prediction model, some independent variables predict the dependent variable better than others. With multicollinearity arising, detecting which variables are better predictors becomes more difficult.
+
+***
+
+
+\newpage
+
+## Scatterplot Matrix Analysis
+
+The *o_width*, *o_height* variables have shown strong positive correlations at .99 so they can be removed from further scatterplot matrix analysis.
+
+The *o_framerate* and *o_bitrate*  have been removed from the correlation analysis as they have showed values of 0 in the correlation matrix above. This result negates the possibility of linear association though there could be some type of correlation. 
+
+\hfill\break
+```{r SPLOM, fig.height = 6 , fig.width = 9, echo = FALSE}
+
+pairs.panels(transcodeData[c("duration", "width", "height", "bitrate", "framerate", "size", "mpeg4", "h264", "flv", "vp8")])
+
+```
+
+\hfill\break
+The top right portion of scatterplot above has been replaced with a correlation matrix. Along the diagonal there is a histogram showing the distribution of the values across each variable. Importantly there is now additional visual information to aid interpretation of these results; the correlation ellipse and the loess smooth. 
+
+The circular image depicts the correlation ellipse. When this shape is stretched into a more oval shape it indicates a high level of correlation. The more circular it appears the weaker the correlation e.g. framerate: flv indicates a weak correlation. 
+
+Stretched correlation ellipses/ high correlations
+framerate: width (0.40),  framerate:height(0.46)
+bitrate:width (0.82), bitrate: height (0.80) **
+
+
+The curved line across each scatterplot is the loess smooth. This helps to see the relationship between the x and y variables. Non - linear correlations are visible where before they were obscured. 
+
+The relationship between *size* and *duration* indicates a strong positive linear correlation up until a certain duration. At that point it becomes a negative linear relationship, indicating other factors come into play at this stage. 
+
+A closer look at the scatterplot matrix enables a clearer reading.
+
+\hfill\break
+
+```{r SPLOM2, fig.height = 6 , fig.width = 9, echo = FALSE}
+
+pairs.panels(transcodeData[c("duration", "width", "height", "bitrate", "framerate", "size")])
+
+```
+
+While it appears there are weak negative correlations between the different types of codec and each of the other independent variables selected, a closer inspection will clarify this. 
+
+\hfill\break
+```{r SPLOM3, fig.height = 6 , fig.width = 9, echo = FALSE}
+
+pairs.panels(transcodeData[c("duration","height", "framerate", "size", "mpeg4", "h264", "flv", "vp8")])
+
+```
+\newpage
+
+# Building the Model
+
+## Partitioning the data
+
+```{r partition, echo = FALSE}
+
+# split the data into training and test set
+set.seed(123) # setting the partitions 
+
+training.samples <- transcodeData$utime %>% 
+  createDataPartition(p = 0.8, list = FALSE) 
+
+train.data <- transcodeData[training.samples,]
+test.data <- transcodeData[-training.samples,]
+
+```
+
+The data is partitioned into two halves: test and train. Eighty per cent of the data is held for training the model. The remaining twenty per cent will be held back to test the strength of the model. 
+
+## Training the Model 
+
+The lm function is used to return a vector/MATRIX of predicted values. 
+
+
+```{r train, echo = FALSE}
+# training the model
+transcodeModel <- lm(utime ~ duration + width + bitrate + framerate + size, data = transcodeData)
+
+```
+
+The model is trained on *duration*, *width*, *bitrate*, *framerate* and *size* in accordance with the results from the correlation matrix. 
+*Width* and *height* are strongly positively correlated so one will suffice, the one with the highest correlation to both *size* and *bitrate* is *width* which follows logic as the width contains more picture information than height (the sizes all have wider screen size than height; 6:9, 4:3 aspect ratios). *Size* and *bitrate* were correlated at 0.62, a positive linear association though not reaching the threshold of 0.7 for multicollinearity. Both features will be included to begin training. 
+
+
+## Evaluating Model Performance
+
+The estimated beta coefficients reveal the impact on the dependent variable of a rise of one unit in each independent variable, while all other variables remain unchanged. The intercept shows the value of *utime* when the variables are equal to 0. 
+
+```{r betaCo, echo = FALSE, message = FALSE}
+
+# check estimated beta coefficients 
+#summary(transcodeModel)
+```
+
+To see how well the model performs a summary output appears below. *Duration*, *bitrate*, and *framerate* appear to be the most statistically significant in this set of independent variables. The R-Squared and Adjusted R-Squared Values are measures of explanatory power. These values do not necessarily explain whether the model fits well or not. Including more variables to the model would increase the R-square value but the extra variables may not be statistically significant. These R-square values are low however, and will not wield any accuracy for predictions using this model. Alternate variables should be explored. 
+
+ 
+
+```{r modelSum, echo = FALSE, message = FALSE, results= 'asis'}
+# summary of model fitting
+
+summ(transcodeModel)
+
+
+```
+\begin{center}
+ Summary of Model Performance
+\end{center}                                 
+
+\newpage
+\hfill\break
+# Improving Model Performance
+
+Overfitting can occur when too many independent variables have been added to the prediction model. The model has become too 'tuned' to the data such that it loses its prediction power on new data. Underfitting is the opposite concern and in this case the initial model is performing poorly on the training data. Regression modelling leaves feature selection to the user and with this data it is apparent that the output settings for each codec would further aid explanation of the dependent variable, *utime*.
+
+
+## An Improved Regression Model
+
+
+Model 2 has been predicted using the following independent variables;
+
+```{r featureList, echo = FALSE}
+
+featureList <- list("bitrate", "flv", "h264", "mpeg4", "vp8", "o_framerate", "o_bitrate", "o_width")
+
+kable(featureList, col.names = NULL, format = 'latex', booktabs = T) %>% kable_styling(latex_options = "HOLD_position")
+
+
+```
+
+```{r reTrain, echo = FALSE}
+# training the model
+# transcodeModel2 <- lm(utime ~ bitrate + framerate, data = transcodeData)
+# summ(transcodeModel2, caption = "Model 2 Performance Summary")
+
+
+# training the model
+# transcodeModel3 <- lm(utime ~ bitrate + framerate + mpeg4 + h264 + flv + vp8, data = transcodeData)
+# summ(transcodeModel3)
+
+# training the model - model 2 in text
+transcodeModel4 <- lm(utime ~  bitrate + mpeg4 + h264 + flv + vp8 + o_framerate, o_bitrate + o_width , data = transcodeData)
+summ(transcodeModel4)
+
+```
+\begin{center}
+ Summary of Model Performance: Model 2
+\end{center} 
+\newpage
+
+
+The Adjusted R-Squared value has improved. Employing the use of the output codec type could further increase this value. 
+
+\hfill\break
+
+The third model has been predicted using the following independent variables;
+
+```{r featureList2, results = 'asis'}
+
+# names(transcodeModel5$coefficients)
+
+featureList <- list("bitrate", "flv", "h264", "mpeg4", "o_bitrate", "o_codech264", "o_codecmpeg4", "o_codecvp8", "o_width", "vp8")
+
+kable(featureList, col.names = NULL, format = 'latex', booktabs = T) %>% kable_styling(latex_options =  "HOLD_position")
+```
+
+
+```{r impModel, echo = FALSE}
+
+# training the model
+transcodeModel5 <- lm(utime ~  bitrate + mpeg4 + h264 + flv + vp8  + o_framerate + o_bitrate + o_width + o_mpeg4 + o_h264 + o_flv + o_vp8, data = transcodeData)
+summ(transcodeModel5)
+
+```
+
+
+Including the output codecs returns a reduced Adjusted R_Squared Value. The correlation matrix revealed more correlations per h264 and mpeg4 so these could be alternatively selected. 
+
+\newpage
+## Predicting
+
+The second model, returning Adjusted R-Squared of 0.57, is chosen to predict on the test data. The results appear below. 
+
+```{r predict, echo = FALSE}
+
+
+# make a prediction  - bitrate + mpeg4 + h264 + flv + vp8 + o_framerate, o_bitrate + o_width 
+newdata = data.frame(bitrate = 56000, mpeg4 = 0, h264 = 1, flv = 0, vp8 = 0, o_framerate = 25, o_bitrate= 88000, o_width = 1080)
+predict(transcodeModel4, newdata)
+
+# what is the coefficient of determination?
+coeff <- summary(transcodeModel4)$r.squared
+
+# what is the confidence interval 
+ConfInt <- predict(transcodeModel4, newdata, interval="confidence")
+
+# confidence if asked to predict right now with these parameters. 
+ConfIntExact <- predict(transcodeModel4, newdata, interval="predict")
+
+
+
+```
+
+
+The Coefficient of Determination for this model is: $`r coeff`$. The confidence Interval for the prediction with the input variables used is: $`r ConfIntExact `$. However, multicollinearity issues are leading to issues with the prediction outcome. The prediction is rank-deficient; 23.26. The model needs to be revised to reduce all possible multicollinearities. 
+
+
+
+# Conclusion
+
+While correlation does not imply causation, it can lead to problems of over-fitting and bias in the resultant model. 
+The model presents issues with high correlations between independent variables which challenges the use of variables required to increase the measure of dependent variable explanation, Adjusted R-Squared. With such a large number of features to analyse and select from, the task is challenging. Setting minimum/maximum parameters from the correlation matrix to the scatterplot matrix would enable inspection of all significant parameters. This would aid reduction of multicollinearity. Achieving optimum model precision takes time and there are several possibilities to further explore. Reducing multicollinearity is the next step. Plotting the predicted and residual values would aid further investigation of the prediction model and identify weaknesses. Robust standard errors could be applied to improve accuracy. This would be interesting to explore further. 
+
+
